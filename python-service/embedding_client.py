@@ -1,7 +1,7 @@
 from sentence_transformers import SentenceTransformer
 
 # Multilingual model
-model = SentenceTransformer('sentence-transformers/distiluse-base-multilingual-cased-v2')
+model = SentenceTransformer('sentence-transformers/all-mpnet-base-v2')
 
 def encode_texts(texts):
     """

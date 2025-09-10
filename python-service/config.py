@@ -8,7 +8,7 @@ CONTENTSTACK_API_KEY = os.getenv("CONTENTSTACK_API_KEY")
 CONTENTSTACK_DELIVERY_TOKEN = os.getenv("CONTENTSTACK_ACCESS_TOKEN")
 CONTENTSTACK_ENVIRONMENT = os.getenv("CONTENTSTACK_ENVIRONMENT", "development")
 CONTENTSTACK_BASE_URL = os.getenv("CONTENTSTACK_BASE_URL", "https://cdn.contentstack.io/v3")  # or use GraphQL endpoint if preferred
-
+CONTENTSTACK_MANAGEMENT_TOKEN = os.getenv("CONTENTSTACK_MANAGEMENT_TOKEN")  # for bulk import or reindexing
 # Pinecone
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX = os.getenv("PINECONE_INDEX", "contentstack-index")
