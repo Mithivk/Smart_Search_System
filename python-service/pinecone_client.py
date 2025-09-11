@@ -1,25 +1,50 @@
+# pinecone_client.py
+import os
+from dotenv import load_dotenv
 from pinecone import Pinecone, ServerlessSpec
-from config import PINECONE_API_KEY, PINECONE_INDEX, PINECONE_CLOUD, PINECONE_REGION
 
-# Initialize Pinecone client
-pc = Pinecone(api_key=PINECONE_API_KEY)
+# Load environment variables from .env
+load_dotenv()
 
-# Create index if it doesn't exist
-if PINECONE_INDEX not in pc.list_indexes().names():
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+PINECONE_ENV = os.getenv("PINECONE_ENV")  # optional
+INDEX_NAME = os.getenv("PINECONE_INDEX")
+
+# sanity check
+if not PINECONE_API_KEY or not INDEX_NAME:
+    raise ValueError("PINECONE_API_KEY and PINECONE_INDEX must be set in environment variables")
+
+# Create Pinecone client
+pc = Pinecone(api_key=PINECONE_API_KEY, environment=PINECONE_ENV)
+
+# Check if index exists, create if not
+existing_indexes = [i.name for i in pc.list_indexes()]
+if INDEX_NAME not in existing_indexes:
     pc.create_index(
-        name=PINECONE_INDEX,
-        dimension=512,
+        name=INDEX_NAME,
+        dimension=1536,  # change to your embedding size
         metric="cosine",
-        spec=ServerlessSpec(
-            cloud=PINECONE_CLOUD,
-            region=PINECONE_REGION
-        )
+        spec=ServerlessSpec(cloud="aws", region="us-west-2")
     )
 
-index = pc.Index(PINECONE_INDEX)
+# Connect to the index
+index = pc.Index(INDEX_NAME)
 
-def upsert_vectors(vectors):
-    index.upsert(vectors=vectors)
+# -------------------------------
+# Upsert a vector
+# -------------------------------
+def upsert_vector(vector_id: str, vector: list, metadata: dict):
+    """
+    Upsert a single vector into Pinecone
+    """
+    index.upsert([{"id": vector_id, "values": vector, "metadata": metadata}])
 
-def query_vector(vector, top_k=5):
-    return index.query(vector=vector, top_k=top_k, include_metadata=True)
+# -------------------------------
+# Query vectors
+# -------------------------------
+def query_vector(vector: list, top_k: int = 5):
+    """
+    Query Pinecone index and return top_k results
+    """
+    res = index.query(vector=vector, top_k=top_k, include_metadata=True)
+    return res
