@@ -3,22 +3,44 @@ import { useState } from "react";
 import { Search } from "lucide-react";
 
 interface SearchBarProps {
-  onSearch: (query: string) => void;
+  onResults: (results: any[]) => void; // ✅ pass results to parent
+  onLoading?: (loading: boolean) => void;
 }
 
-export default function SearchBar({ onSearch }: SearchBarProps) {
+export default function SearchBar({ onResults, onLoading }: SearchBarProps) {
   const [query, setQuery] = useState("");
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (query.trim()) {
-      onSearch(query.trim());
+
+    try {
+      onLoading?.(true);
+
+      const res = await fetch("http://localhost:8000/search", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ query, top_k: 10 }),
+      });
+
+      if (!res.ok) throw new Error(`Search failed: ${res.statusText}`);
+
+      const data = await res.json();
+      console.log("🔍 Search results:", data);
+
+      onResults(data.results || []); // ✅ send results to parent
+    } catch (err) {
+      console.error("❌ Error during search:", err);
+      onResults([]);
+    } finally {
+      onLoading?.(false);
     }
   };
 
   return (
     <form
-      onSubmit={handleSubmit}
+      onSubmit={handleSearch}
       className="flex items-center w-full max-w-2xl mx-auto mt-8 bg-white rounded-full shadow-md border border-gray-200 px-4 py-2"
     >
       <Search className="h-5 w-5 text-gray-400 mr-2" />

@@ -1,32 +1,18 @@
 "use client";
+import { useState } from "react";
 import SearchBar from "../components/SearchBar";
 import SearchResult from "../components/SearchResults";
-import { useState } from "react";
 
-export default function HomePage() {
-  const [loading, setLoading] = useState(false);
+export default function SearchPage() {
   const [results, setResults] = useState<any[]>([]);
-
-  const handleSearch = async (query: string) => {
-    setLoading(true);
-    // Replace with real API call
-    setTimeout(() => {
-      setResults([
-        { id: "1", title: "Sample Result", description: "This is a test description." },
-      ]);
-      setLoading(false);
-    }, 1500);
-  };
+  const [loading, setLoading] = useState(false);
 
   return (
-    <main className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 px-6 py-12">
-      <div className="max-w-5xl mx-auto text-center">
-        <h1 className="text-4xl font-bold text-gray-900 mb-6">
-          Search Your Content
-        </h1>
-        <SearchBar onSearch={handleSearch} />
+    <div className="min-h-screen bg-white p-6">
+      <div className="max-w-4xl mx-auto">
+        <SearchBar onResults={setResults} onLoading={setLoading} />
         <SearchResult results={results} loading={loading} />
       </div>
-    </main>
+    </div>
   );
 }

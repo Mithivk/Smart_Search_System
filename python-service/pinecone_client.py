@@ -22,7 +22,7 @@ existing_indexes = [i.name for i in pc.list_indexes()]
 if INDEX_NAME not in existing_indexes:
     pc.create_index(
         name=INDEX_NAME,
-        dimension=1536,  # change to your embedding size
+        dimension=768,
         metric="cosine",
         spec=ServerlessSpec(cloud="aws", region="us-west-2")
     )
@@ -42,7 +42,7 @@ def upsert_vector(vector_id: str, vector: list, metadata: dict):
 # -------------------------------
 # Query vectors
 # -------------------------------
-def query_vector(vector: list, top_k: int = 5):
+def query_vector(vector: list, top_k: int = 5,filter: dict = None):
     """
     Query Pinecone index and return top_k results
     """
