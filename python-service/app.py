@@ -10,12 +10,13 @@ from dotenv import load_dotenv
 from pymongo import MongoClient
 from typing import List, Optional, Dict, Any, Generator
 import asyncio
-import aiohttp
+import google.generativeai as genai
 import numpy as np
 from collections import defaultdict
-
+from fastapi.responses import JSONResponse
 from embedding_client import encode_texts
 from pinecone_client import query_vector
+from langdetect import detect, DetectorFactory
 
 # Load cross-encoder for reranking
 try:
@@ -69,7 +70,7 @@ MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
 DB_NAME = os.getenv("DB_NAME", "techsurf")
 
 # Search configuration
-MIN_SCORE_THRESHOLD = float(os.getenv("MIN_SCORE_THRESHOLD", 0.2))
+MIN_SCORE_THRESHOLD = float(os.getenv("MIN_SCORE_THRESHOLD", -15))
 INITIAL_CANDIDATES = int(os.getenv("INITIAL_CANDIDATES", 50))
 RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() == "true"
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 200))  # Words per chunk
@@ -79,6 +80,10 @@ LLM_API_KEY = os.getenv("LLM_API_KEY")
 LLM_API_URL = os.getenv("LLM_API_URL", "https://api.openai.com/v1/chat/completions")
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-3.5-turbo")
 LLM_ENABLED = os.getenv("LLM_ENABLED", "false").lower() == "true" and LLM_API_KEY
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+genai.configure(api_key=GEMINI_API_KEY)
+GEMINI_MODEL = "gemini-1.5-pro"
+DetectorFactory.seed = 0
 
 # -------------------------------
 # Service Connections
@@ -87,6 +92,7 @@ redis_client = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
 mongo_client = MongoClient(MONGO_URI)
 db = mongo_client[DB_NAME]
 config_collection = db["configs"]
+
 
 # -------------------------------
 # Helper functions
@@ -211,6 +217,64 @@ async def llm_query_expansion(query: str) -> List[str]:
         logger.warning(f"LLM query expansion failed: {str(e)}")
     
     return [query]
+
+async def translate_text(text: str, target_lang: str) -> str:
+    """
+    Translate given text into target_lang using Gemini with strict chat instructions.
+    """
+    if not text or not target_lang or target_lang == "en":
+        return text
+
+    lang_map = {
+        "en": "English",
+        "mr": "Marathi",
+        "hi": "Hindi", 
+        "kn": "Kannada",
+        "ta": "Tamil",
+        "te": "Telugu",
+        "gu": "Gujarati",
+        "bn": "Bengali",
+        "pa": "Punjabi",
+        "ml": "Malayalam",
+        "or": "Odia",
+        "ur": "Urdu",
+        "ne": "Nepali"
+    }
+
+    target_lang_full = lang_map.get(target_lang, "English")
+
+    try:
+        model = genai.GenerativeModel(GEMINI_MODEL)
+        
+        # Start a chat with very clear system instructions
+        chat = model.start_chat(history=[
+            {
+                "role": "user",
+                "parts": ["You are a translation machine. Your only function is to translate text. Never provide explanations, options, or additional text. Only output the translated text."]
+            },
+            {
+                "role": "model", 
+                "parts": ["Understood. I will only output the translated text with no additional content, explanations, or options."]
+            },
+            {
+                "role": "user",
+                "parts": ["Translate 'Hello world' to Hindi"]
+            },
+            {
+                "role": "model",
+                "parts": ["नमस्ते दुनिया"]
+            }
+        ])
+        
+        prompt = f"Translate this to {target_lang_full}: {text}"
+        response = chat.send_message(prompt)
+        translated = response.text.strip()
+        
+        return translated
+
+    except Exception as e:
+        logger.warning(f"Translation failed: {str(e)}")
+        return text
 
 def expand_query_semantically(query: str) -> str:
     """
@@ -383,84 +447,108 @@ class SearchRequest(BaseModel):
     query: str
     top_k: int = 5
     use_reranking: bool = True
+    target_lang: Optional[str] = None  # <--- add this line
 
 @app.post("/search")
 async def search(req: SearchRequest):
     if not req.query:
         raise HTTPException(status_code=400, detail="Query required")
 
-    cache_key = f"search:{req.query.strip().lower()}:{req.top_k}:{req.use_reranking}"
+    # Step 1: Detect query language FIRST
+    try:
+        detected_lang = detect(req.query)
+        logger.info(f"Detected query language: {detected_lang}")
+    except:
+        detected_lang = "en"
+        logger.warning("Language detection failed, defaulting to English")
+
+    # Use detected language as target language if none specified
+    target_lang = req.target_lang if req.target_lang else detected_lang
+    logger.info(f"Target translation language: {target_lang}")
+
+    cache_key = f"search:{req.query.strip().lower()}:{req.top_k}:{req.use_reranking}:{target_lang}"
     cached = redis_client.get(cache_key)
     if cached:
         logger.info("⚡ Returning cached search results")
         return json.loads(cached)
 
     try:
-        # Step 1: Expand short queries semantically
+        # Step 2: Expand query
         expanded_query = expand_query_semantically(req.query)
-        logger.info(f"Original query: '{req.query}' -> Expanded: '{expanded_query}'")
-        
+        # Step 3: Encode query
         query_vec = encode_texts([expanded_query])[0]
         query_vec_normalized = normalize_vector(query_vec)
         
-        # Step 2: Query Pinecone
-        res = query_vector(
-            vector=query_vec_normalized.tolist(),
-            top_k=INITIAL_CANDIDATES
-        )
-        
+        # Step 4: Query Pinecone
+        res = query_vector(vector=query_vec_normalized.tolist(), top_k=INITIAL_CANDIDATES)
         matches = res.get("matches", [])
         logger.info(f"Raw matches from Pinecone: {len(matches)}")
-        
-        # DEBUG: Log the top 5 raw matches
-        for i, match in enumerate(matches[:5]):
-            logger.info(f"Match {i}: Score={match['score']:.4f}, ID={match['id']}")
-            if 'metadata' in match:
-                metadata = match['metadata']
-                logger.info(f"    Metadata keys: {list(metadata.keys())}")
-                if 'text' in metadata:
-                    text_preview = metadata['text'][:100] + "..." if len(metadata['text']) > 100 else metadata['text']
-                    logger.info(f"    Text: {text_preview}")
 
         if not matches:
             return {"results": []}
 
-        # Step 3: Aggregate chunk scores to document level
-        aggregated_results = aggregate_document_scores(matches)  # Use raw matches directly
+        # Step 5: Aggregate and rerank
+        aggregated_results = aggregate_document_scores(matches)
         logger.info(f"Aggregated documents: {len(aggregated_results)}")
-        
-        # Step 4: Rerank documents
+
         if req.use_reranking and len(aggregated_results) > 1:
             final_results = rerank_results(req.query, aggregated_results, req.top_k)
+            logger.info(f"🔎 Final results after reranking: {len(final_results)}")
         else:
             final_results = aggregated_results[:req.top_k]
 
-        # Step 5: Format and filter results
+        # Step 6: Filter by MIN_SCORE_THRESHOLD
         hits = []
-        for result in final_results:
-            if result.get('score', 0) >= MIN_SCORE_THRESHOLD:
+        for r in final_results:
+            score = r.get("final_score", r.get("score", 0))
+            logger.info(f"Result {r['id']} score={score}, threshold={MIN_SCORE_THRESHOLD}")
+            if score >= MIN_SCORE_THRESHOLD:
                 hits.append({
-                    "id": result['id'],
-                    "score": result.get('final_score', result.get('score', 0)),
-                    "metadata": result['metadata'],
-                    "chunk_matches": result.get('chunk_matches', 0)
+                    "id": r['id'],
+                    "score": score,
+                    "metadata": r['metadata'],
+                    "chunk_matches": r.get('chunk_matches', 0),
+                    "reranker_score": r.get("reranker_score"),
+                    "final_score": score
                 })
 
-        logger.info(f"Final hits: {len(hits)}")
-        for hit in hits:
-            logger.info(f"Final hit: Score={hit['score']:.4f}, ID={hit['id']}")
+        # Step 7: Translate results if query language is not English
+        if target_lang != "en" and hits:
+            logger.info(f"Translating results to: {target_lang}")
+            for hit in hits:
+                metadata = hit["metadata"]
+                
+                # Translate title
+                if 'title' in metadata and metadata['title']:
+                    translated_title = await translate_text(metadata['title'], target_lang)
+                    metadata['title_translated'] = translated_title
+                
+                # Translate body/content
+                content_to_translate = metadata.get('body') or metadata.get('text') or metadata.get('title', '')
+                if content_to_translate:
+                    # Only translate a preview to avoid long texts
+                    content_preview = content_to_translate[:200] + "..." if len(content_to_translate) > 200 else content_to_translate
+                    translated_content = await translate_text(content_preview, target_lang)
+                    metadata['content_translated'] = translated_content
+                
+                # Add language info
+                metadata['original_language'] = 'en'
+                metadata['translated_language'] = target_lang
 
-        # Step 6: Cache and return
+        # Step 8: Cache and return
         if hits:
             redis_client.setex(cache_key, REDIS_TTL, json.dumps({"results": hits}))
         
-        return {"results": hits}
+        logger.info(f"✅ Returning {len(hits)} results to client")
+        return {
+            "results": hits,
+            "query_language": detected_lang,
+            "target_language": target_lang
+        }
 
     except Exception as e:
         logger.error(f"❌ Search error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
-    
-# -------------------------------
+        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")# -------------------------------
 # Re-indexing Endpoint
 # -------------------------------
 @app.post("/reindex/all")

@@ -16,12 +16,12 @@ export default function SearchBar({ onResults, onLoading }: SearchBarProps) {
     try {
       onLoading?.(true);
 
-      const res = await fetch("http://localhost:8000/search", {
+      const res = await fetch("https://a7eb14f3d131.ngrok-free.app/search", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ query, top_k: 10 }),
+        body: JSON.stringify({ query, top_k: 5 }),
       });
 
       if (!res.ok) throw new Error(`Search failed: ${res.statusText}`);
